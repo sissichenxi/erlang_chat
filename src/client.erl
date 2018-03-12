@@ -55,9 +55,9 @@ handle(Socket) ->
                 %chat 0001
                 {msg,Id,Msg} ->
                     io:format("my message:~p~n",[Msg]),
-                    N = term_to_binary(Id),
+                    Tid = term_to_binary(Id),
                     M = term_to_binary(Msg),
-                    Packet = <<0001:8,(byte_size(N)):16,N/binary,(byte_size(M)):16,M/binary>>,
+                    Packet = <<0001:8,(byte_size(Tid)):16,Tid/binary,(byte_size(M)):16,M/binary>>,
                     gen_tcp:send(Socket,Packet),
                         receive
                             {tcp,Socket,Bin} ->
