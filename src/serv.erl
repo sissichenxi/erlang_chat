@@ -63,7 +63,7 @@ loop({Socket,St}) ->
                             Packet = <<0001:8,Len:16,N/binary>>,
                             gen_tcp:send(Socket,Packet),
                             %转发给目标Pid
-                            Regid="user"+integer_to_list(Id),
+                            Regid="user"+integer_to_list(binary_to_term(Id),
                             IdAtom=list_to_atom(Regid),
                             IdAtom!{Msg},
                             loop({Socket,State});
