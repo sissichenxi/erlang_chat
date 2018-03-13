@@ -1,29 +1,47 @@
--module(client).
--export([get_socket/0,client_login/1,send_message/1,logout/1]).
-
-get_socket() ->
-        {ok,Socket} = gen_tcp:connect("localhost",2345,[binary,{packet,4}]),
-    register(client,spawn(fun() -> handle(Socket) end)).
+-module(client).1
+-export([client_login/1,send_message/1,logout/1]).
+-record(id,{currentid}).
 
 client_login({Id}) ->
-    client ! {self(),{login,Id}},
+    {ok,Socket} = gen_tcp:connect("localhost",2345,[binary,{packet,4}]),
+    IdAtom=spawn_atom(Id),
+    register(IdAtom,spawn(fun() -> handle(Socket) end)),
+    %record current id
+    Cid = #id{currentid = Id},
+    _=Cid#id{},
+
+    IdAtom ! {self(),{login,Id}},
         receive
-            {client, Response} ->
+            {IdAtom, _Response} ->
                 ok
+        after 3000->
+            io:format("failed to login")
         end.
 
-send_message({Id,Msg}) -> 
-    client ! {self(),{msg,Id,Msg}},
+send_message({Id,Msg}) ->
+    Crid=#id{},
+    Cid=Crid#id.currentid,
+    IdAtom=spawn_atom(Cid),
+    IdAtom ! {self(),{msg,Id,Msg}},
         receive
-            {client,Response} -> 
+            {IdAtom,_Response} ->
                 ok
+        after 3000->
+            io:format("failed to send")
         end.
 
 logout(Id) ->
-    client ! {self(),{logout,Id}},
+    Crid=#id{},
+    if Id==Crid#id.currentid ->
+        IdAtom=spawn_atom(Id),
+        IdAtom ! {self(),{logout,Id}},
         receive
             {client,Response} -> ok
-        end.
+        end
+    end.
+spawn_atom(Id)->
+    Clientid="client"++integer_to_list(Id),
+    list_to_atom(Clientid).
 
 handle(Socket) ->
     receive
@@ -34,23 +52,8 @@ handle(Socket) ->
                 {login,Id} ->
                     I = term_to_binary(Id),
                     Packet = <<0000:8,(byte_size(I)):16,I/binary>>,
-                    ok=gen_tcp:send(Socket,Packet),               
-                    
-                    receive
-                        %from server
-                        {tcp,Socket,Bin} ->
-                            <<_State:8,S/binary>> = Bin,
-                            case binary_to_term(S) of
-                                success ->
-                                    From ! {client, "you have login successfully"},
-                                    io:format("you have login successfully ~n");
-                                failed ->
-                                    From ! {"you have login failed,please try again"},
-                                    gen_tcp:close(Socket)
-                            end
-                    after 5000 ->
-                        ok
-                    end,
+                    gen_tcp:controlling_process(Socket,spawn(?MODULE,handle_tcpmsg,{From,Socket})),
+                    ok=gen_tcp:send(Socket,Packet),
                     handle(Socket);
                 %chat 0001
                 {msg,Id,Msg} ->
@@ -59,32 +62,31 @@ handle(Socket) ->
                     M = term_to_binary(Msg),
                     Packet = <<0001:8,(byte_size(Tid)):16,Tid/binary,(byte_size(M)):16,M/binary>>,
                     gen_tcp:send(Socket,Packet),
-                        receive
-                            {tcp,Socket,Bin} ->
-                                <<_State:8,N/binary>> = Bin,
-                                case binary_to_term(N) of
-                                {ok,received} -> 
-                                    From ! {"ok,you can send next message ~n"}
-                                end
-                        after 3000 ->
-                            ok
-                        end,
-                        handle(Socket);
+                    handle(Socket);
                 %logout 0002
                 {logout,Id} ->
                     I = term_to_binary({Id}),
                     Packet = <<0002:8,(byte_size(I)):16,I/binary>>,
                     gen_tcp:send(Socket,Packet),
-                        receive
-                            {tcp,Socket,Bin} ->
-                                <<_State:4,N/binary>> = Bin,
-                                case binary_to_term(N) of
-                                    ok ->
-                                        From ! {"ok,you have logout successfully ~n"}
-                                end
-                        after 5000 ->
-                            ok
-                        end,
-                        gen_tcp:close(Socket)
+                    gen_tcp:close(Socket);
+                {_,_}->
+                    io:format("wrong format cmd")
             end
+    end.
+
+handle_tcpmsg(From,Socket)->
+    receive
+    %from server
+        {tcp,Socket,Bin} ->
+            <<_State:8,S/binary>> = Bin,
+            case binary_to_term(S) of
+                success ->
+                    From ! {client, "you have login successfully"},
+                    io:format("you have login successfully ~n");
+                failed ->
+                    From ! {"you have login failed,please try again"},
+                    gen_tcp:close(Socket)
+            end
+    after 5000 ->
+        ok
     end.
