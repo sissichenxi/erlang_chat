@@ -1,5 +1,5 @@
 -module(client).
--export([client_login/1,send_message/1,logout/1]).
+-export([client_login/1,send_message/2,logout/1]).
 -record(id,{currentid}).
 
 client_login({Id}) ->
@@ -11,8 +11,9 @@ client_login({Id}) ->
     IdAtom ! {self(),{login,Id}}.
 
 
-send_message({Id,Msg}) ->
-    IdAtom=spawn_atom(Id),
+send_message(Sid,{Id,Msg}) ->
+    IdAtom=spawn_atom(Sid),
+    io:format("tgt id ~p~n",[IdAtom]),
     IdAtom ! {self(),{chat,Id,Msg}}.
 
 logout(Id) ->
@@ -26,18 +27,22 @@ spawn_atom(Id)->
 handle(CId,Socket) ->
     receive
         {tcp,Socket,Bin} ->
-          io:format("received msg from server~p~n",Bin),
+          io:format("received msg from server~p~n",[Bin]),
           <<State:8,Body/binary>> = Bin,
           case State of
             0003->
-              <<Size:16,Body:Size/binary-unit:8>>=Body,
-
+              <<Sidsize:16,Sid:Sidsize/binary-unit:8,
+                Msgsize:16,Msg:Msgsize/binary-unit:8>>=Body,
+              SId=binary_to_term(Sid),
+              MSg=binary_to_term(Msg),
+              io:format("user~p",[SId]),
+              io:format(" says ~p~n",[MSg])
           end,
           %%gen_tcp:send(Socket,{chat_ok}),
           handle(CId,Socket);
         {tcp_closed,Socket}->
           io:format("tcp connection closed~n");
-        {From,Request} ->
+        {_From,Request} ->
             io:format("client proc received Request ~p~n",[Request]),
             case Request of
                 %login 0000
@@ -57,7 +62,7 @@ handle(CId,Socket) ->
                     handle(CId,Socket);
                 %logout 0002
                 {logout,Id} ->
-                    I = term_to_binary({Id}),
+                    I = term_to_binary(Id),
                     Packet = <<0002:8,(byte_size(I)):16,I/binary>>,
                     gen_tcp:send(Socket,Packet),
                     gen_tcp:close(Socket);

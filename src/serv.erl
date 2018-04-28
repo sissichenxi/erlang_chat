@@ -54,24 +54,31 @@ loop(Socket) ->
                             <<Sidsize:16,Sid:Sidsize/binary-unit:8,Tidsize:16,Tid:Tidsize/binary-unit:8,
                               Msgsize:16,Msg:Msgsize/binary-unit:8>>=Str,
                             %send to tgt Pid
-                            Regid="user"+integer_to_list(binary_to_term(Tid)),
+                            Regid="user"++integer_to_list(binary_to_term(Tid)),
+                            io:format("send msg to user ~p~n",[binary_to_term(Tid)]),
                             case lookup_ets(binary_to_term(Tid)) of
-                              [_Record]->
+                              [Record]->
+                                io:format("record found~p~n",[Record]),
                                 IdAtom=list_to_atom(Regid),
-                                IdAtom!{binary_to_term(Sid),Msg};
+                                IdAtom!{binary_to_term(Sid),binary_to_term(Msg)};
                               []->
                                 io:format("target user not online~n")
                             end,
                             loop(Socket);
                 %logout
                     0002 ->
-                      io:format("received logout msg~n")
-                        %<<Idsize:16,Id:IdSize/binary-unit:8>>=Str,
+                      io:format("received logout msg~n"),
+                      <<Idsize:16,Id:Idsize/binary>>=Str,
+                      true=ets:delete(onlineusers,binary_to_term(Id))
             end;
 
         {tcp_closed,Socket} ->
-                              io:format("Server socket closed~n");
+            io:format("Server socket closed~n");
         {Srcid,Msg}->
-            io:format("receive msg from ~p :~p~n",Srcid,Msg),
-            gen_tcp:send()
+            %io:format("receive msg from ~p~n",[Srcid],[Msg]),
+            Sid=term_to_binary(Srcid),
+            M=term_to_binary(Msg),
+            Packet = <<0003:8,(byte_size(Sid)):16,Sid/binary,(byte_size(M)):16,M/binary>>,
+            gen_tcp:send(Socket,Packet),
+            loop(Socket)
     end.
