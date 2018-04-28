@@ -1,30 +1,25 @@
 -module(client).
 -export([client_login/1,send_message/2,logout/1]).
--record(id,{currentid}).
+-record(data, {
+  socket,
+  id
+}).
 
 client_login({Id}) ->
     {ok,Socket} = gen_tcp:connect("localhost",2345,[binary,{packet,4}]),
-    IdAtom=spawn_atom(Id),
-    Pid=spawn(fun() -> handle(Id,Socket) end),
-    register(IdAtom,Pid),
+    Pid=spawn(fun() -> handle(#data{socket = Socket}) end),
+    register(?MODULE,Pid),
     ok=gen_tcp:controlling_process(Socket,Pid),
-    IdAtom ! {self(),{login,Id}}.
+    ?MODULE ! {self(),{login,Id}}.
 
-
-send_message(Sid,{Id,Msg}) ->
-    IdAtom=spawn_atom(Sid),
-    io:format("tgt id ~p~n",[IdAtom]),
-    IdAtom ! {self(),{chat,Id,Msg}}.
+send_message(Id,Msg) ->
+    io:format("send msg to ~p~n",[Id]),
+    ?MODULE ! {self(),{chat,Id,Msg}}.
 
 logout(Id) ->
-        IdAtom=spawn_atom(Id),
-        IdAtom ! {self(),{logout,Id}}.
+        ?MODULE ! {self(),{logout,Id}}.
 
-spawn_atom(Id)->
-    Clientid="client"++integer_to_list(Id),
-    list_to_atom(Clientid).
-
-handle(CId,Socket) ->
+handle(Data=#data{socket = Socket,id=CId}) ->
     receive
         {tcp,Socket,Bin} ->
           io:format("received msg from server~p~n",[Bin]),
@@ -39,7 +34,7 @@ handle(CId,Socket) ->
               io:format(" says ~p~n",[MSg])
           end,
           %%gen_tcp:send(Socket,{chat_ok}),
-          handle(CId,Socket);
+          handle(Data);
         {tcp_closed,Socket}->
           io:format("tcp connection closed~n");
         {_From,Request} ->
@@ -50,7 +45,7 @@ handle(CId,Socket) ->
                     I = term_to_binary(Id),
                     Packet = <<0000:8,(byte_size(I)):16,I/binary>>,
                     ok=gen_tcp:send(Socket,Packet),
-                    handle(CId,Socket);
+                    handle(Data=#data{id = Id});
                 %chat 0001
                 {chat,Id,Msg} ->
                     io:format("my message:~p~n",[Msg]),
@@ -59,7 +54,7 @@ handle(CId,Socket) ->
                     M = term_to_binary(Msg),
                     Packet = <<0001:8,(byte_size(Sid)):16,Sid/binary,(byte_size(Tid)):16,Tid/binary,(byte_size(M)):16,M/binary>>,
                     gen_tcp:send(Socket,Packet),
-                    handle(CId,Socket);
+                    handle(Data);
                 %logout 0002
                 {logout,Id} ->
                     I = term_to_binary(Id),

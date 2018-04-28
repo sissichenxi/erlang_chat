@@ -7,6 +7,10 @@
     id
 }).
 
+-record(data, {
+  socket,
+  id
+}).
 
 init([]) ->
     initialize_ets(),
@@ -23,7 +27,7 @@ start_server() ->
 handle_connect(Listen) ->
     {ok,Socket} = gen_tcp:accept(Listen),
     spawn(fun() -> handle_connect(Listen) end),
-    loop(Socket).
+    loop(#data{socket = Socket}).
 
 initialize_ets() ->
     ets:new(onlineusers,[set,public,named_table,{keypos,#users.id}]).
@@ -31,7 +35,7 @@ initialize_ets() ->
 lookup_ets(Id)->
     ets:lookup(onlineusers,Id).
 
-loop(Socket) ->
+loop(Data=#data{socket=Socket, id=Id}) ->
     receive
         {tcp,Socket,Bin} ->
              <<State:8,Str/binary>> = Bin,            
@@ -40,13 +44,13 @@ loop(Socket) ->
                     0000 ->
                       io:format("received login msg~n"),
                         <<Size:16,Body:Size/binary-unit:8>>=Str,
-                            Id=binary_to_term(Body),
-                            Regid="user"++integer_to_list(Id),
+                            LId=binary_to_term(Body),
+                            Regid="user"++integer_to_list(LId),
                             IdAtom=list_to_atom(Regid),
                             register(IdAtom,self()),
-                            NewUser=#users{id=Id},
+                            NewUser=#users{id=LId},
                             ets:insert(onlineusers,NewUser),
-                            loop(Socket);
+                            loop(Data#data{id=LId});
                            
                 %chat
                     0001 ->
@@ -64,21 +68,21 @@ loop(Socket) ->
                               []->
                                 io:format("target user not online~n")
                             end,
-                            loop(Socket);
+                            loop(Data);
                 %logout
                     0002 ->
                       io:format("received logout msg~n"),
-                      <<Idsize:16,Id:Idsize/binary>>=Str,
-                      true=ets:delete(onlineusers,binary_to_term(Id))
+                      true=ets:delete(onlineusers,Id)
             end;
 
         {tcp_closed,Socket} ->
-            io:format("Server socket closed~n");
+            io:format("Server socket closed~n"),
+            true=ets:delete(onlineusers,binary_to_term(Id));
         {Srcid,Msg}->
             %io:format("receive msg from ~p~n",[Srcid],[Msg]),
             Sid=term_to_binary(Srcid),
             M=term_to_binary(Msg),
             Packet = <<0003:8,(byte_size(Sid)):16,Sid/binary,(byte_size(M)):16,M/binary>>,
             gen_tcp:send(Socket,Packet),
-            loop(Socket)
+            loop(Data)
     end.
