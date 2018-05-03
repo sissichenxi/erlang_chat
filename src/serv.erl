@@ -1,6 +1,6 @@
 -module(serv).
 -export([start_server/0,initialize_ets/0,loop/1,init/1,
-  terminate/2]).
+  terminate/2,sendMsg/2]).
 -include("user_info.hrl").
 -define(SERVER,?MODULE).
 
@@ -16,20 +16,16 @@
 -record(rooms,{
   rmid,
   rmname,
-  rmmems
+  rmmems=[]
 }).
 
 init([]) ->
     initialize_ets(),
     start_server(), 
     {ok,true}.
-genid(#rooms{rmid = RoomId})->
-  idgen!{self(),roomid},
-  receive
-    {roomid,RoomId}->
-      RoomId
-  end,
-  RoomId.
+genid(Room=#rooms{})->
+  idgen!{self(),roomid,Room}.
+
 
 terminate(_Reason,_State) -> ok.
 
@@ -53,9 +49,10 @@ lookup_ets(Id)->
 
 loopid(RoomId)->
   receive
-    {From,roomid}->
-      From!{roomid,RoomId+1},
-      loop(RoomId+1)
+    {From,roomid,Room}->
+      io:format("received roomid generate req from ~p~n",[From]),
+      From!{roomid,Room#rooms{rmid = RoomId+1}},
+      loopid(RoomId+1)
   end.
 
 loop(Data=#data{socket=Socket, id=Id}) ->
@@ -66,20 +63,19 @@ loop(Data=#data{socket=Socket, id=Id}) ->
                 %login
                     0000 ->
                       io:format("received login msg~n"),
-                        <<Size:16,Body:Size/binary-unit:8>>=Str,
-                            LId=binary_to_term(Body),
+                            LId=binary_to_term(Str),
                             Regid="user"++integer_to_list(LId),
                             IdAtom=list_to_atom(Regid),
                             register(IdAtom,self()),
                             NewUser=#users{id=LId},
-                            ets:insert(onlineusers,NewUser),
+                            true=ets:insert(onlineusers,NewUser),
                             loop(Data#data{id=LId});
                            
                 %chat
                     0001 ->
                       io:format("received chat msg~n"),
                             <<Sidsize:16,Sid:Sidsize/binary-unit:8,Tidsize:16,Tid:Tidsize/binary-unit:8,
-                              Msgsize:16,Msg:Msgsize/binary-unit:8>>=Str,
+                              Msg/binary>>=Str,
                             %send to tgt Pid
                             Regid="user"++integer_to_list(binary_to_term(Tid)),
                             io:format("send msg to user ~p~n",[binary_to_term(Tid)]),
@@ -95,19 +91,40 @@ loop(Data=#data{socket=Socket, id=Id}) ->
                     %room creat
                     0003->
                       io:format("received room creat msg~n"),
-                      <<Msgsize:16,RmName:Msgsize/binary>> = Str,
-                      Roomid=genid(Room=#rooms{rmmems =Id,rmname = (binary_to_term(RmName)) }),
-                      ets:insert(rooms,Room=#rooms{rmid = Roomid});
+                      RmName = binary_to_term(Str),
+                      genid(#rooms{rmmems =[Id],rmname = RmName}),
+                      loop(Data);
                     %room join
                     0004->
-                      io:format("received room join msg~n");
+                      io:format("received room join msg~n"),
+                      <<SidSize:16,Sid:SidSize/binary,Rid/binary>> = Str,
+                      SrcId=binary_to_term(Sid),
+                      RmId=binary_to_term(Rid),
+                      case ets:lookup(rooms,RmId) of
+                        [Room]->
+                          io:format("found room ~p~n",[Room]),
+                          RoomMembs=Room#rooms.rmmems,
+                          NewRoom=Room#rooms{rmmems =[SrcId|RoomMembs] },
+                          true=ets:insert(rooms,NewRoom);
+                        []->
+                          io:format("room not found~n")
+                      end,
+                      loop(Data);
                     %room chat
                     0005->
                       io:format(("received room chat msg~n")),
-                      %<<Sidsize:16,Sid:Sidsize/binary-unit:8,Size:16,Body:Size/binary-unit:8>>=Str,
-                      %Msg=binary_to_term(Body),
-                      Key=ets:first(onlineusers),
-                      sendMsg(Key,Str);
+                      <<Sidsize:16,_Sid:Sidsize/binary-unit:8,
+                        Ridsize:16,Rid:Ridsize/binary-unit:8,_Body/binary>>=Str,
+                      RmId=binary_to_term(Rid),
+                      case ets:lookup(rooms,RmId) of
+                        [Room]->
+                          io:format("found room~p~n",[Room]),
+                          RmMembs=Room#rooms.rmmems,
+                          ok=sendMsg(RmMembs,Str);
+                        []->
+                          io:format("room not found~n")
+                      end,
+                      loop(Data);
                 %logout
                     0002 ->
                       io:format("received logout msg~n"),
@@ -116,28 +133,27 @@ loop(Data=#data{socket=Socket, id=Id}) ->
 
         {tcp_closed,Socket} ->
             io:format("Server socket closed~n"),
-            true=ets:delete(onlineusers,binary_to_term(Id));
+            true=ets:delete(onlineusers,Id);
         {privchat,Srcid,Msg}->
             Sid=term_to_binary(Srcid),
             M=term_to_binary(Msg),
-            Packet = <<0004:8,(byte_size(Sid)):16,Sid/binary,(byte_size(M)):16,M/binary>>,
+            Packet = <<0006:8,(byte_size(Sid)):16,Sid/binary,M/binary>>,
             ok=gen_tcp:send(Socket,Packet),
             loop(Data);
         {roomchat,MsgBody}->
-          Packet= <<0005:8,MsgBody>>,
+          Packet= <<0007:8,MsgBody/binary>>,
           ok=gen_tcp:send(Socket,Packet),
+          loop(Data);
+        {roomid,Room}->
+          io:format("generate room id ~p~n",[Room#rooms.rmid]),
+          true=ets:insert(rooms,Room),
           loop(Data)
-    end.
-sendMsg(Key,Packet)->
-  case lookup_ets(binary_to_term(Key)) of
-    [Record]->
-      io:format("record found~p~n",[Record]),
-      Id=Record#users.id,
-      Pid=list_to_atom("user"++integer_to_list(Id)),
-      Pid!{roomchat,Packet},
-      Next=ets:next(onlineusers,Key),
-      sendMsg(Next,Packet);
-    []->
-      io:format("target user not online~n")
-  end.
 
+    end.
+
+sendMsg([],_Packet)->
+  ok;
+sendMsg([Head|Tail],Packet)->
+      Pid=list_to_atom("user"++integer_to_list(Head)),
+      Pid!{roomchat,Packet},
+      sendMsg(Tail,Packet).
