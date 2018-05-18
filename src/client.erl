@@ -77,8 +77,6 @@ handle(Data=#data{socket = Socket,id=CId}) ->
                 %logout 0002
                 {logout,Id} ->
                     I = term_to_binary(Id),
-                    Packet = <<0002:8,I/binary>>,
-                    ok=gen_tcp:send(Socket,Packet),
                     gen_tcp:close(Socket);
                 {rmcreat,Name}->
                     N=term_to_binary(Name),
